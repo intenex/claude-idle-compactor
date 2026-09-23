@@ -18,6 +18,12 @@ const USAGE = {
 }
 
 type World = {
+  // Refuse the direct $.session.compact(), as an SDK session (the desktop
+  // app's Code tab) does, so the plugin must run /compact instead.
+  headless: boolean
+  // The test's own engine, which the /compact stub drives.
+  engine: Engine | undefined
+  commandRuns: string[]
   store: Map<string, unknown>
   logs: string[]
   compactions: number
@@ -29,7 +35,7 @@ type World = {
 function world(on: On, env: Record<string, string> = {}) {
   const clock = mock.clock(on, { now: START })
   mock.env(on, env)
-  const w: World = { store: new Map(), logs: [], compactions: 0, contextTokens: 120_000, rateLimits: [], settings: {} }
+  const w: World = { headless: false, engine: undefined, commandRuns: [], store: new Map(), logs: [], compactions: 0, contextTokens: 120_000, rateLimits: [], settings: {} }
   on('ui.log', ($, e) => {
     w.logs.push(e.text)
     return { value: undefined }
@@ -58,7 +64,28 @@ function world(on: On, env: Record<string, string> = {}) {
   }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer, usage: e.usage }))
-  on('session.compact', () => {
+  // /compact, run by the plugin through $.command.run: in an SDK session it
+  // runs inside a turn of its own, whose compaction passes the plugin's hooks.
+  on('command.run', { command: 'compact' }, async ($, e) => {
+    w.commandRuns.push(e.command)
+    const engine = w.engine
+    if (engine === undefined) throw new Error('set w.engine to run /compact')
+    await engine.turn.start({ text: '/compact', turnId: 'compact-turn' })
+    await engine.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'hi', toolUses: [] }] })
+    await engine.turn.complete({
+      answer: '',
+      durationMs: 5_000,
+      isAborted: false,
+      turnId: 'compact-turn',
+      reason: 'answer',
+      usage: USAGE,
+    })
+    return { text: 'Compacted' }
+  })
+  on('session.compact', ($, e) => {
+    if (w.headless && e.trigger !== 'manual') {
+      throw new Error('$.session.compact: not available in a headless (-p / SDK) session yet: compaction here runs inside a turn (a /compact prompt); catch it and carry on')
+    }
     w.compactions += 1
     return {
       messages: [{ role: 'user', text: 'summary', toolUses: [] }],
@@ -170,6 +197,46 @@ describe('timing', () => {
     await completeTurn($, 't1', false)
     await clock.advance(55 * MINUTE)
     expect(w.compactions).toBe(0)
+  })
+})
+
+// An SDK session (the desktop app's Code tab) starts non-interactive and
+// refuses the direct $.session.compact(); its compaction runs inside a
+// /compact turn. (The engine skips a test hook that throws, so the refusal
+// itself is exercised against a real desktop session, not here.)
+async function startHeadless($: Engine, on: On, w: World): Promise<void> {
+  w.headless = true
+  w.engine = $
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+}
+
+describe('SDK sessions (desktop Code tab)', () => {
+  test('runs /compact in a session that started non-interactive', async ($, on) => {
+    const { clock, w } = world(on)
+    await startHeadless($, on, w)
+    await completeTurn($)
+    await clock.advance(51 * MINUTE)
+    expect(w.commandRuns).toEqual(['compact'])
+    expect(w.compactions).toBe(1)
+    const log = w.store.get('log') as { outcome: string; tokensAfter?: number }[]
+    expect(log.map(entry => entry.outcome)).toEqual(['compacted'])
+    expect(log[0]?.tokensAfter).toBe(14_000)
+    expect(w.logs.at(-1)).toContain('120,000 → 14,000 tokens')
+  })
+
+  test('the /compact turn does not re-arm an idle session', async ($, on) => {
+    const { clock, w } = world(on)
+    await startHeadless($, on, w)
+    await completeTurn($)
+    await clock.advance(51 * MINUTE)
+    expect(w.compactions).toBe(1)
+    await clock.advance(180 * MINUTE)
+    expect(w.compactions).toBe(1)
+    await $.turn.start({ text: 'back again', turnId: 't2' })
+    await completeTurn($, 't2')
+    await clock.advance(51 * MINUTE)
+    expect(w.compactions).toBe(2)
   })
 })
 

@@ -8,7 +8,10 @@
 //
 // Built on Claude Code's function-hooks plugin API (early access): the
 // `turn.complete` event marks the last response, `$.clock.every` polls the
-// wall clock, and `$.session.compact()` is the same call `/compact` makes.
+// wall clock, and the compaction is the one `/compact` makes: the direct
+// `$.session.compact()` in a terminal session, and `/compact` run through
+// `$.command.run` in an SDK session (the desktop app's Code tab), which does
+// not take the direct call.
 //
 // The engine reads which `$` calls a module makes from its source, so every
 // function that takes `$` is declared at the top of this file.
@@ -38,9 +41,31 @@ type State = {
   // One idle compaction per idle period: set by a completed turn, cleared once
   // that idle period has been handled (compacted, skipped or missed).
   armed: boolean
-  compacting: boolean
+  // Set while this plugin's own compaction is in flight: what its log entry
+  // needs once the result is known.
+  compacting: Pending | undefined
+  // An SDK session (the desktop app's Code tab, `-p`) cannot take
+  // `$.session.compact()` between turns; it compacts through a `/compact`
+  // prompt, run with `$.command.run`. Undefined until known.
+  headless: boolean | undefined
+  currentTurnId: string | undefined
+  // The turn a compaction ran inside (a `/compact` prompt in an SDK session):
+  // its completion must not re-arm the idle clock.
+  compactedTurnId: string | undefined
   poll: Timer | undefined
   commandRegistered: boolean
+}
+
+type Pending = {
+  idleMinutes: number
+  contextTokens: number
+}
+
+type CompactOutcome = {
+  skip?: string
+  tokensBefore?: number
+  tokensAfter?: number
+  usage?: LogEntry['compactUsage']
 }
 
 type LogEntry = {
@@ -105,7 +130,7 @@ async function safeCheck($: EngineInterface, state: State): Promise<void> {
   try {
     await check($, state)
   } catch (err) {
-    state.compacting = false
+    state.compacting = undefined
     $.ui.log(`idle-compactor: check failed (${String(err).slice(0, 200)})`, { to: 'debug' })
   }
 }
@@ -139,7 +164,7 @@ async function shortCacheReason($: EngineInterface): Promise<string | undefined>
 
 async function check($: EngineInterface, state: State): Promise<void> {
   const { config } = state
-  if (!state.armed || state.compacting || state.turnRunning || state.lastResponseAt === undefined) return
+  if (!state.armed || state.compacting !== undefined || state.turnRunning || state.lastResponseAt === undefined) return
   const idleMs = (await $.clock.now()) - state.lastResponseAt
   if (idleMs < config.idleMs) return
 
@@ -187,32 +212,68 @@ async function check($: EngineInterface, state: State): Promise<void> {
   }
 
   await $.store.set(dayKey, attemptsToday + 1)
-  state.compacting = true
+  state.compacting = { idleMinutes, contextTokens }
   try {
-    const result = await $.session.compact()
-    if (result.skip !== undefined) {
-      await record($, { outcome: 'skipped', reason: `vetoed: ${result.skip}`, idleMinutes, contextTokens })
-      return
+    if (state.headless !== true) {
+      try {
+        // Between turns in a terminal session: the direct call.
+        await finishCompaction($, state, await $.session.compact())
+        return
+      } catch (err) {
+        if (!isHeadlessRefusal(err)) throw err
+        state.headless = true
+      }
     }
-    await record($, {
-      outcome: 'compacted',
-      idleMinutes,
-      contextTokens,
-      tokensBefore: result.tokensBefore,
-      tokensAfter: result.tokensAfter,
-      compactUsage: result.usage,
-    })
-    $.ui.log(
-      `idle-compactor: compacted after ${Math.round(idleMinutes)} min idle, while the prompt cache was warm ` +
-        `(${formatTokens(result.tokensBefore ?? contextTokens)} → ${formatTokens(result.tokensAfter)} tokens)`,
-    )
+    // An SDK session compacts inside a turn: run /compact as if typed. The
+    // compaction passes through this plugin's own `session.compact` hook,
+    // which records it.
+    const output = await $.command.run({ command: 'compact', args: '' })
+    if (state.compacting !== undefined) {
+      await record($, {
+        outcome: 'failed',
+        reason: `/compact ran without compacting: ${output.text ?? '(no output)'}`.slice(0, 300),
+        idleMinutes,
+        contextTokens,
+      })
+    }
   } catch (err) {
     // Rejects when a turn started in the meantime; the next idle period gets
     // its own chance.
-    await record($, { outcome: 'failed', reason: String(err).slice(0, 300), idleMinutes, contextTokens })
+    if (state.compacting !== undefined) {
+      await record($, { outcome: 'failed', reason: String(err).slice(0, 300), idleMinutes, contextTokens })
+    }
   } finally {
-    state.compacting = false
+    state.compacting = undefined
   }
+}
+
+function isHeadlessRefusal(err: unknown): boolean {
+  return /headless|SDK session/i.test(String(err))
+}
+
+// Records this plugin's own compaction once its result is known: from the
+// direct call, or from the `session.compact` hook when /compact ran it.
+async function finishCompaction($: EngineInterface, state: State, result: CompactOutcome): Promise<void> {
+  const pending = state.compacting
+  if (pending === undefined) return
+  state.compacting = undefined
+  const { idleMinutes, contextTokens } = pending
+  if (result.skip !== undefined) {
+    await record($, { outcome: 'skipped', reason: `vetoed: ${result.skip}`, idleMinutes, contextTokens })
+    return
+  }
+  await record($, {
+    outcome: 'compacted',
+    idleMinutes,
+    contextTokens,
+    tokensBefore: result.tokensBefore,
+    tokensAfter: result.tokensAfter,
+    compactUsage: result.usage,
+  })
+  $.ui.log(
+    `idle-compactor: compacted after ${Math.round(idleMinutes)} min idle, while the prompt cache was warm ` +
+      `(${formatTokens(result.tokensBefore ?? contextTokens)} → ${formatTokens(result.tokensAfter)} tokens)`,
+  )
 }
 
 async function statusText($: EngineInterface, state: State): Promise<string> {
@@ -268,13 +329,18 @@ export const register: Register = (on, options) => {
     lastResponseAt: undefined,
     turnRunning: false,
     armed: false,
-    compacting: false,
+    compacting: undefined,
+    headless: undefined,
+    currentTurnId: undefined,
+    compactedTurnId: undefined,
     poll: undefined,
     commandRegistered: false,
   }
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
+    // Not interactive: an SDK host (the desktop app's Code tab) or `-p`.
+    state.headless = !e.isInteractive
     await ensureCommand($, state)
     return result
   })
@@ -283,6 +349,7 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     state.turnRunning = true
+    state.currentTurnId = e.turnId
     return next(e)
   })
 
@@ -291,6 +358,12 @@ export const register: Register = (on, options) => {
     // Subagents' turns run on their own caches; only the main loop counts.
     if (e.agentId !== undefined) return result
     state.turnRunning = false
+    // The turn a /compact prompt ran in: the conversation was just compacted,
+    // so this is no new activity to wait out.
+    if (e.turnId === state.compactedTurnId) {
+      state.compactedTurnId = undefined
+      return result
+    }
     // A plugin reload (auto-update, /reload-plugins) runs register() again
     // without a new session.start, so the command is ensured here too.
     await ensureCommand($, state)
@@ -304,11 +377,15 @@ export const register: Register = (on, options) => {
 
   on('session.compact', async ($, e, next) => {
     const result = await next(e)
-    // Another compaction of the main conversation (/compact, auto-compact)
-    // already replaced the history: nothing is left to do this idle period.
-    if (e.agentId === undefined && e.trigger !== 'precompute' && result.skip === undefined) {
+    if (e.agentId !== undefined || e.trigger === 'precompute') return result
+    // This plugin's own /compact in an SDK session arrives here.
+    await finishCompaction($, state, result)
+    // Any compaction of the main conversation (/compact, auto-compact, this
+    // plugin's) replaced the history: nothing is left to do this idle period.
+    if (result.skip === undefined) {
       state.armed = false
       stopPolling(state)
+      if (state.turnRunning) state.compactedTurnId = state.currentTurnId
     }
     return result
   })

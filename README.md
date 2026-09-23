@@ -39,7 +39,9 @@ It backs up `settings.json` first, and it's safe to run again. It needs macOS, g
 The plugin is a Claude Code *hooks module* (the function-hooks plugin API). Inside every session:
 
 - `turn.complete` records when the last response arrived and arms the session.
-- A 30-second `$.clock.every` poll checks the wall clock. Once the session has been idle for `idle_minutes`, it calls `$.session.compact()`, the same call `/compact` makes, run between turns.
+- A 30-second `$.clock.every` poll checks the wall clock. Once the session has been idle for `idle_minutes`, it compacts, the same way `/compact` does:
+  - **terminal:** `$.session.compact()`, between turns;
+  - **desktop Code tab:** the app runs Claude Code as an SDK session, which refuses that direct call, so the plugin runs `/compact` through `$.command.run`. The transcript shows it as a `/compact` command.
 - The window closes at `cutoff_minutes`. If the Mac slept through the window, the check fires late and is skipped: by then the cache is probably gone, and compacting would be billed at full price.
 - Each idle period is handled once. Only a new response re-arms the session.
 
@@ -51,6 +53,12 @@ It does nothing while a turn is running, including while a turn waits on a permi
 - anything beyond `max_per_day` compactions per UTC day across all sessions.
 
 Unlike typing keystrokes into a terminal, it never touches the prompt box, so a half-typed message stays as it was.
+
+## Verified
+
+In a real Claude desktop app Code-tab session, using the plugin as installed from this repository with a 1-minute test setting, the session compacted on its own from **71,431 → 8,435 tokens**. The summarization request read **66,086 tokens from the warm cache**, sent 7,171 uncached (the newest part of the conversation plus the summary instructions), and produced 751 output tokens. A 17-test suite runs the module against Claude Code's engine with a mocked clock, covering timing, sleep, eligibility, the SDK fallback, and the daily cap.
+
+Not yet verified live: the terminal path (`$.session.compact()` in an interactive session). The engine tests cover it, and it is the path the plugin API documents.
 
 ## Settings
 

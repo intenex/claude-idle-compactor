@@ -1,0 +1,57 @@
+{
+  "name": "idle-compactor",
+  "description": "Compacts an idle Claude Code session shortly before its 1-hour prompt cache expires, so coming back later re-sends a short summary instead of the whole conversation uncached.",
+  "author": {
+    "name": "intenex",
+    "url": "https://github.com/intenex"
+  },
+  "homepage": "https://github.com/intenex/claude-idle-compactor",
+  "repository": "https://github.com/intenex/claude-idle-compactor",
+  "license": "MIT",
+  "keywords": [
+    "compact",
+    "prompt-cache",
+    "idle",
+    "tokens"
+  ],
+  "userConfig": {
+    "enabled": {
+      "type": "boolean",
+      "title": "Idle compaction enabled",
+      "description": "Compact idle sessions automatically. Turn off to pause without uninstalling.",
+      "default": true
+    },
+    "idle_minutes": {
+      "type": "number",
+      "title": "Compact after (minutes idle)",
+      "description": "Minutes after the last response before compacting. Must be under the 60-minute cache lifetime.",
+      "default": 50,
+      "min": 0.5,
+      "max": 58
+    },
+    "cutoff_minutes": {
+      "type": "number",
+      "title": "Give up after (minutes idle)",
+      "description": "If the check first runs later than this (for example after the Mac slept), skip: the cache is likely gone and compacting would be paid at full price.",
+      "default": 56,
+      "min": 1,
+      "max": 59
+    },
+    "min_context_tokens": {
+      "type": "number",
+      "title": "Minimum context (tokens)",
+      "description": "Only compact sessions whose context is at least this large. Smaller ones gain little from a summary.",
+      "default": 30000,
+      "min": 0,
+      "max": 2000000
+    },
+    "max_per_day": {
+      "type": "number",
+      "title": "Max idle compactions per day",
+      "description": "Safety cap across all sessions on this machine, per UTC day.",
+      "default": 50,
+      "min": 0,
+      "max": 1000
+    }
+  }
+}

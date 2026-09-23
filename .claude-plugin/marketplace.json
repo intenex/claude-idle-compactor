@@ -1,0 +1,19 @@
+{
+  "name": "claude-idle-compactor",
+  "owner": {
+    "name": "intenex",
+    "url": "https://github.com/intenex"
+  },
+  "metadata": {
+    "description": "Compacts idle Claude Code sessions before the 1-hour prompt cache expires."
+  },
+  "plugins": [
+    {
+      "name": "idle-compactor",
+      "source": "./plugin",
+      "description": "Compacts an idle Claude Code session (terminal or desktop Code tab) shortly before its 1-hour prompt cache expires.",
+      "category": "productivity",
+      "homepage": "https://github.com/intenex/claude-idle-compactor"
+    }
+  ]
+}

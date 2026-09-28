@@ -24,13 +24,19 @@ curl -fsSL https://raw.githubusercontent.com/intenex/claude-idle-compactor/main/
 
 Or download the repository ([ZIP](https://github.com/intenex/claude-idle-compactor/archive/refs/heads/main.zip)), unzip it, and double-click **Install.command**. The first time, macOS may ask you to confirm (right-click → Open).
 
+On **Windows**, paste this into PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/intenex/claude-idle-compactor/main/install.ps1 | iex
+```
+
 The installer:
 
 1. adds this repository as a Claude Code plugin marketplace and installs `idle-compactor` for your user,
 2. turns on **auto-update** for that marketplace in `~/.claude/settings.json`,
 3. sets `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the same file's `env`. The plugin API it relies on is early access and off by default.
 
-It backs up `settings.json` first, and it's safe to run again. It needs macOS, git, and either the Claude desktop app or the `claude` CLI. If the CLI isn't on your `PATH`, it uses the copy of Claude Code bundled with the desktop app.
+It backs up `settings.json` first, and it's safe to run again. It needs macOS or Windows, git, and either the Claude desktop app or the `claude` CLI. If the CLI isn't on your `PATH`, it uses the copy of Claude Code bundled with the desktop app.
 
 **New sessions** load the plugin. Sessions that are already open pick it up when you restart them.
 
@@ -94,14 +100,20 @@ The installer sets `"autoUpdate": true` on the marketplace, so Claude Code check
 curl -fsSL https://raw.githubusercontent.com/intenex/claude-idle-compactor/main/uninstall.sh | bash
 ```
 
-Or double-click **Uninstall.command**. It removes the plugin, the marketplace, and the settings the installer added.
+On Windows:
+
+```powershell
+irm https://raw.githubusercontent.com/intenex/claude-idle-compactor/main/uninstall.ps1 | iex
+```
+
+Or double-click **Uninstall.command** (macOS). Either way, it removes the plugin, the marketplace, and the settings the installer added.
 
 ## Limits
 
 - **Desktop app, Chat tab:** not covered. Those conversations run on claude.ai, not Claude Code, and have no `/compact`.
 - **Early-access API:** the function-hooks API may change between Claude Code releases. If a release breaks the module, Claude Code skips it and nothing is compacted. A fix pushed here reaches everyone through auto-update. Validated with Claude Code 2.1.270 and 2.1.280.
 - **Timing:** the idle clock starts when a turn completes, which is slightly after the turn's last request was sent. The 50/56-minute defaults leave room for that.
-- **Installer:** macOS only. Elsewhere, run `claude plugin marketplace add intenex/claude-idle-compactor` and `claude plugin install idle-compactor@claude-idle-compactor`, then add `"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1"` to `env` and `"autoUpdate": true` to the marketplace's `extraKnownMarketplaces` entry in `settings.json`.
+- **Installer:** macOS and Windows. Elsewhere, run `claude plugin marketplace add intenex/claude-idle-compactor` and `claude plugin install idle-compactor@claude-idle-compactor`, then add `"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1"` to `env` and `"autoUpdate": true` to the marketplace's `extraKnownMarketplaces` entry in `settings.json`.
 
 ## Development
 
